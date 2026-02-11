@@ -1,0 +1,43 @@
+[Setup]
+AppName=TP Backend Service
+AppVersion=1.0
+DefaultDirName=C:\TPCompanion
+DisableDirPage=no 
+DefaultGroupName=TP Companion
+OutputDir=C:\TPInstallerOutput
+OutputBaseFilename=TPBackendInstaller
+Compression=lzma
+SolidCompression=yes
+PrivilegesRequired=admin
+UninstallDisplayIcon={app}\node.exe
+
+[Files]
+Source: "C:\TPCompanionBackend\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
+
+[Dirs]
+Name: "{app}\logs"
+
+[Run]
+; Install WinSW service
+Filename: "{app}\winsw\TPBackendService.exe"; Parameters: "install"; Flags: runhidden waituntilterminated
+
+; Start WinSW service
+Filename: "{app}\winsw\TPBackendService.exe"; Parameters: "start"; Flags: runhidden waituntilterminated
+
+[UninstallRun]
+; Stop service
+Filename: "{app}\winsw\TPBackendService.exe"; Parameters: "stop"; Flags: runhidden waituntilterminated
+
+; Uninstall service
+Filename: "{app}\winsw\TPBackendService.exe"; Parameters: "uninstall"; Flags: runhidden waituntilterminated
+
+[Code]
+procedure InitializeWizard();
+begin
+  { Force the default installation folder to C:\TPCompanion }
+  WizardForm.DirEdit.Text := 'C:\TPCompanion';
+end;
+
+
+
+

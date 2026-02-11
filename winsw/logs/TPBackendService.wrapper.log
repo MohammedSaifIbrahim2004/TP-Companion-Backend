@@ -1,0 +1,51 @@
+2026-02-11 20:36:43,222 DEBUG - Starting WinSW in console mode
+2026-02-11 20:36:43,252 INFO  - Stopping service 'TP Backend Service (TPBackendService)'...
+2026-02-11 20:36:43,267 INFO  - Service 'TP Backend Service (TPBackendService)' has already stopped.
+2026-02-11 20:36:43,586 DEBUG - Starting WinSW in console mode
+2026-02-11 20:36:43,613 INFO  - Uninstalling service 'TP Backend Service (TPBackendService)'...
+2026-02-11 20:36:43,619 INFO  - Service 'TP Backend Service (TPBackendService)' was uninstalled successfully.
+2026-02-11 20:36:58,689 DEBUG - Starting WinSW in console mode
+2026-02-11 20:36:58,727 FATAL - The specified service does not exist as an installed service.
+2026-02-11 20:36:59,067 DEBUG - Starting WinSW in console mode
+2026-02-11 20:36:59,091 INFO  - Uninstalling service 'TP Backend Service (TPBackendService)'...
+2026-02-11 20:36:59,096 WARN  - Service 'TP Backend Service (TPBackendService)' does not exist.
+2026-02-11 20:36:59,410 DEBUG - Starting WinSW in console mode
+2026-02-11 20:36:59,435 INFO  - Installing service 'TP Backend Service (TPBackendService)'...
+2026-02-11 20:36:59,458 INFO  - Service 'TP Backend Service (TPBackendService)' was installed successfully.
+2026-02-11 20:36:59,792 DEBUG - Starting WinSW in console mode
+2026-02-11 20:36:59,820 INFO  - Starting service 'TP Backend Service (TPBackendService)'...
+2026-02-11 20:37:00,122 DEBUG - Starting WinSW in service mode
+2026-02-11 20:37:00,175 INFO  - Service 'TP Backend Service (TPBackendService)' started successfully.
+2026-02-11 20:37:00,270 INFO  - Starting C:\TPCompanionBackend\winsw\node.exe src\server.js
+2026-02-11 20:37:00,296 ERROR - Failed to start service.
+System.ComponentModel.Win32Exception (2): An error occurred trying to start process 'C:\TPCompanionBackend\winsw\node.exe' with working directory 'C:\TPCompanionBackend\winsw'. The system cannot find the file specified.
+   at System.Diagnostics.Process.StartWithCreateProcess(ProcessStartInfo )
+   at System.Diagnostics.Process.StartCore(ProcessStartInfo )
+   at System.Diagnostics.Process.Start()
+   at WinSW.Util.ProcessHelper.StartProcessAndCallbackForExit(Process processToStart, String executable, String arguments, Dictionary`2 envVars, String workingDirectory, Nullable`1 priority, ProcessCompletionCallback callback, LogHandler logHandler, Boolean hideWindow)
+   at WinSW.WrapperService.StartProcess(Process processToStart, String arguments, String executable, LogHandler logHandler)
+   at WinSW.WrapperService.DoStart()
+   at WinSW.WrapperService.OnStart(String[] args)
+2026-02-11 20:37:41,756 DEBUG - Starting WinSW in console mode
+2026-02-11 20:37:41,786 INFO  - Stopping service 'TP Backend Service (TPBackendService)'...
+2026-02-11 20:37:41,799 INFO  - Service 'TP Backend Service (TPBackendService)' has already stopped.
+2026-02-11 20:37:42,119 DEBUG - Starting WinSW in console mode
+2026-02-11 20:37:42,144 INFO  - Uninstalling service 'TP Backend Service (TPBackendService)'...
+2026-02-11 20:37:42,149 INFO  - Service 'TP Backend Service (TPBackendService)' was uninstalled successfully.
+2026-02-11 20:37:42,460 DEBUG - Starting WinSW in console mode
+2026-02-11 20:37:42,487 INFO  - Installing service 'TP Backend Service (TPBackendService)'...
+2026-02-11 20:37:42,511 INFO  - Service 'TP Backend Service (TPBackendService)' was installed successfully.
+2026-02-11 20:37:42,815 DEBUG - Starting WinSW in console mode
+2026-02-11 20:37:42,845 INFO  - Starting service 'TP Backend Service (TPBackendService)'...
+2026-02-11 20:37:43,146 DEBUG - Starting WinSW in service mode
+2026-02-11 20:37:43,171 INFO  - Service 'TP Backend Service (TPBackendService)' started successfully.
+2026-02-11 20:37:43,263 INFO  - Starting C:\TPCompanionBackend\winsw\node.exe src\server.js
+2026-02-11 20:37:43,287 ERROR - Failed to start service.
+System.ComponentModel.Win32Exception (2): An error occurred trying to start process 'C:\TPCompanionBackend\winsw\node.exe' with working directory 'C:\TPCompanionBackend\winsw'. The system cannot find the file specified.
+   at System.Diagnostics.Process.StartWithCreateProcess(ProcessStartInfo )
+   at System.Diagnostics.Process.StartCore(ProcessStartInfo )
+   at System.Diagnostics.Process.Start()
+   at WinSW.Util.ProcessHelper.StartProcessAndCallbackForExit(Process processToStart, String executable, String arguments, Dictionary`2 envVars, String workingDirectory, Nullable`1 priority, ProcessCompletionCallback callback, LogHandler logHandler, Boolean hideWindow)
+   at WinSW.WrapperService.StartProcess(Process processToStart, String arguments, String executable, LogHandler logHandler)
+   at WinSW.WrapperService.DoStart()
+   at WinSW.WrapperService.OnStart(String[] args)

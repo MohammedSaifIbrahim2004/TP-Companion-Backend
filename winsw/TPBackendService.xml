@@ -1,0 +1,27 @@
+<service>
+  <id>TPBackendService</id>
+  <name>TP Backend Service</name>
+  <description>TP Backend API Service</description>
+
+  <!-- Working directory -->
+  <workingdirectory>C:\TPCompanion</workingdirectory>
+
+  <!-- Node inside main backend folder -->
+  <executable>C:\TPCompanion\node.exe</executable>
+  <arguments>C:\TPCompanion\src\server.js</arguments>
+
+  <!-- Environment variables -->
+  <env name="PORT" value="47832" />
+  <env name="DB_SERVER" value="localhost\ShortcutsPOS" />
+  <env name="DB_NAME" value="ShortcutsPOS" />
+  <env name="DB_USER" value="scReceipt" />
+  <env name="DB_PASSWORD" value="Harris211*" />
+
+  <!-- Logs -->
+  <logpath>C:\TPCompanion\logs</logpath>
+  <log mode="roll" />
+
+  <!-- Restart on crash -->
+  <onfailure action="restart" delay="5 sec" />
+  <stoptimeout>15 sec</stoptimeout>
+</service>

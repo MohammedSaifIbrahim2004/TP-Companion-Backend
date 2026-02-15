@@ -171,7 +171,6 @@ router.get('/categories', async (req, res) => {
       return res.status(400).json({ message: 'Invalid itemType' });
     }
 
-    // categories already selected in UI (edit mode)
     const exclude = req.query.exclude
       ? req.query.exclude
           .split(',')
@@ -179,48 +178,133 @@ router.get('/categories', async (req, res) => {
           .filter(c => !isNaN(c))
       : [];
 
-    const request = pool.request();
-    request.input('itemType', sql.Int, itemType);
-    request.input('ruleId', sql.Int, ruleId);
+    // 🔹 Step 1A: Categories used by OTHER membership + promotion rules
+// Determine which itemTypes to exclude based on current itemType
+let excludeItemTypes = [];
 
-    const excludeSql = exclude.length
-      ? `OR rc.CategoryId IN (${exclude.join(',')})`
-      : '';
+if (itemType === 1) {
+  excludeItemTypes = [7, 8];
+}
+else if (itemType === 7) {
+  excludeItemTypes = [1, 8];
+}
+else if (itemType === 8) {
+  excludeItemTypes = [1, 7];
+}
 
-    const query = `
-      SELECT [Id Number] AS Id, Name
-      FROM dbo.category
-      WHERE [Id Number] NOT IN (
-        SELECT rc.CategoryId
-        FROM dbo.TPCommissionRuleItemCategories rc
-        JOIN dbo.TPCommissionRuleItems i
-          ON rc.CommissionRuleItemId = i.CommissionRuleItemId
-        WHERE
-          -- block categories used by OTHER item types
-          i.ItemType <> @itemType
-          AND (
-            @ruleId IS NULL
-            OR i.CommissionRuleId <> @ruleId
-          )
-          ${excludeSql}
-      )
-      ORDER BY Name
-    `;
+let otherMpResult = { recordset: [] };
 
-    const result = await request.query(query);
+if (excludeItemTypes.length) {
+  otherMpResult = await pool.request()
+    .input('ruleId', sql.Int, ruleId)
+    .query(`
+      SELECT DISTINCT c.[Id Number] AS Id, c.Name
+      FROM dbo.category c
+      JOIN dbo.TPCommissionRuleItemCategories rc
+        ON rc.CategoryId = c.[Id Number]
+      JOIN dbo.TPCommissionRuleItems i
+        ON rc.CommissionRuleItemId = i.CommissionRuleItemId
+      WHERE i.ItemType IN (${excludeItemTypes.join(',')})
+        AND (@ruleId IS NULL OR i.CommissionRuleId <> @ruleId)
+    `);
+}
+// 🔹 Step 1B: Categories used by THIS rule (edit mode)
+let currentRuleResult = { recordset: [] };
 
-    res.json(
-      result.recordset.map(r => ({
-        value: r.Id,
-        label: r.Name
-      }))
-    );
+if (ruleId) {
+  currentRuleResult = await pool.request()
+    .input('ruleId', sql.Int, ruleId)
+    .input('itemType', sql.Int, itemType)
+    .query(`
+      SELECT DISTINCT c.[Id Number] AS Id, c.Name
+      FROM dbo.category c
+      JOIN dbo.TPCommissionRuleItemCategories rc
+        ON rc.CategoryId = c.[Id Number]
+      JOIN dbo.TPCommissionRuleItems i
+        ON rc.CommissionRuleItemId = i.CommissionRuleItemId
+      WHERE i.CommissionRuleId = @ruleId
+        AND i.ItemType = @itemType
+    `);
+}
+
+// 🔹 Merge both
+const mpMap = new Map();
+
+[...otherMpResult.recordset, ...currentRuleResult.recordset]
+  .forEach(c => {
+    mpMap.set(c.Id, c);
+  });
+  const currentRuleCategories = currentRuleResult.recordset;
+const currentRuleCategoryIds = currentRuleCategories.map(c => c.Id);
+
+const mpCategories = Array.from(mpMap.values());
+
+    // 🔹 Step 2: If Membership or Promotion → ONLY return previously used categories
+    if (itemType === 7 || itemType === 8) {
+
+  const allCategoriesResult = await pool.request().query(`
+    SELECT [Id Number] AS Id, Name
+    FROM dbo.category
+    ORDER BY Name
+  `);
+
+  const blockedCategoryIds = mpCategories.map(c => c.Id);
+
+  let availableCategories = allCategoriesResult.recordset.filter(c =>
+    !blockedCategoryIds.includes(c.Id) ||
+    currentRuleCategoryIds.includes(c.Id) // allow edit mode categories
+  );
+
+  if (exclude.length) {
+    availableCategories = availableCategories.filter(c =>
+    !exclude.includes(c.Id)
+ );
+  }
+
+  return res.json(
+    availableCategories.map(r => ({
+      value: r.Id,
+      label: r.Name
+    }))
+  );
+}
+
+   // 🔹 Step 3: For Services → return all categories EXCEPT MP categories
+// BUT keep categories already used in this rule (edit mode safe)
+
+const allCategoriesResult = await pool.request().query(`
+  SELECT [Id Number] AS Id, Name
+  FROM dbo.category
+  ORDER BY Name
+`);
+
+const mpCategoryIds = mpCategories.map(c => c.Id);
+
+const currentRuleCategoryIdsAll = currentRuleResult.recordset.map(c => c.Id);
+
+// For services
+let availableCategories = allCategoriesResult.recordset.filter(c =>
+    !mpCategoryIds.includes(c.Id) ||
+    currentRuleCategoryIdsAll.includes(c.Id) // allow all current rule categories
+);
+
+if (exclude.length) {
+ availableCategories = availableCategories.filter(c =>
+    !exclude.includes(c.Id)
+  );
+}
+
+res.json(
+  availableCategories.map(r => ({
+    value: r.Id,
+    label: r.Name
+  }))
+);
   } catch (err) {
     console.error('GET /categories error:', err);
     res.status(500).json({ error: err.message });
   }
 });
-
 
 
 /*
@@ -464,6 +548,28 @@ const allMembershipCategories = [
 ];
 
 validateServiceVsMembership(Items, allMembershipCategories);
+// STEP X: collect promotion items & categories
+const promotionItems = Items.filter(i => i.ItemType === 8);
+const promotionCategoryIds = promotionItems.flatMap(i => i.CategoryFilter || []);
+
+// Merge membership + promotion categories
+const blockedCategories = [...new Set([...allMembershipCategories, ...promotionCategoryIds])];
+
+// STEP Y: Handle ApplyAllCategories for services
+const allCategoryIds = (await pool.request().query(`
+  SELECT [Id Number] AS Id FROM dbo.category
+`)).recordset.map(r => r.Id);
+
+for (const item of Items) {
+  if (item.ItemType === 1 && item.ApplyAllCategories) { // Service
+    // Remove categories used by membership & promotion
+    const availableCategories = allCategoryIds.filter(
+      catId => !blockedCategories.includes(catId)
+    );
+    // Assign these to the service item
+    item.CategoryFilter = availableCategories;
+  }
+}
 
 
 
@@ -575,6 +681,29 @@ const allMembershipCategories = [
 
 // STEP D: validate Service items
 validateServiceVsMembership(Items, allMembershipCategories);
+
+// STEP X: collect promotion items & categories
+const promotionItems = Items.filter(i => i.ItemType === 8);
+const promotionCategoryIds = promotionItems.flatMap(i => i.CategoryFilter || []);
+
+// Merge membership + promotion categories
+const blockedCategories = [...new Set([...allMembershipCategories, ...promotionCategoryIds])];
+
+// STEP Y: Handle ApplyAllCategories for services
+const allCategoryIds = (await pool.request().query(`
+  SELECT [Id Number] AS Id FROM dbo.category
+`)).recordset.map(r => r.Id);
+
+for (const item of Items) {
+  if (item.ItemType === 1 && item.ApplyAllCategories) { // Service
+    // Remove categories used by membership & promotion
+    const availableCategories = allCategoryIds.filter(
+      catId => !blockedCategories.includes(catId)
+    );
+    // Assign these to the service item
+    item.CategoryFilter = availableCategories;
+  }
+}
 
 
     // Update rule

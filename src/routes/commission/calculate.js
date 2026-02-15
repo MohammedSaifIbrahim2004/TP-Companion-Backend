@@ -343,151 +343,346 @@ router.post('/', async (req, res) => {
 
 
 
-    /*
-    ============================================
-    CALCULATE COMMISSIONS
-    ============================================
-    */
-    const transactions = [];
+   /*
+============================================
+CALCULATE COMMISSIONS (INTEGER SAFE VERSION)
+WITH OPERATOR SUPPORT (LIKE OLD VERSION)
+============================================
+*/
 
-    for (const sale of sales) {
-      const originalEmployeeId = sale.EmployeeId;
-      const originalEmployeeName = `${sale.FirstName} ${sale.LastName}`;
+const transactions = [];
+const slabBuckets = {};
 
-      for (const rule of rules) {
-        for (const item of rule.Items) {
-          if (item.ItemType !== sale.ItemType) continue;
+const operatorCache = new Map();
+const operatorNameCache = new Map();
 
-          // Apply employee filter
-          if (!item.ApplyAllEmployees && rule.EmployeeIds.length && !rule.EmployeeIds.includes(sale.EmployeeId)) {
-            continue;
-          }
-          // Membership + Promotion category filter (ItemType 7 & 8)
-          if (
-            [7, 8].includes(sale.ItemType) &&
-            item.CategoryFilter.length &&
-            !item.CategoryFilter.includes(sale.CategoryId)
-          ) continue;
+// ---------- HELPERS ----------
 
-
-                  // 🚫 Block Membership & Promotion categories from Services
-          if (
-            sale.ItemType === 1 &&
-            serviceDerivedCategorySet.has(sale.CategoryId)
-          ) {
-            continue;
-          }
-          // Normal Service category filter
-          if (
-            sale.ItemType === 1 &&
-            !item.ApplyAllCategories &&
-            item.CategoryFilter.length &&
-            !item.CategoryFilter.includes(sale.CategoryId)
-          ) {
-            continue;
-          }
-
-           
-
-          // Retail company filter
-          if (sale.ItemType === 2 && !item.ApplyAllCompanies && item.CategoryFilter.length && !item.CategoryFilter.includes(sale.CompanyId)) continue;
-
-          // Commission calculation
-          let commission = 0;
-         if (item.CommissionMethod === 1) {
-  // Flat percentage
-  commission = sale.TotalExTax * (item.Percent / 100);
-
-} else if (item.CommissionMethod === 2) {
-  // Progressive slab
-  commission = calculateSlabCommission(
-    sale.TotalExTax,
-    item.SlabDefinition
-  );
-
-} else if (item.CommissionMethod === 3) {
-  // Flat / Jump slab
-  commission = calculateFlatSlabCommission(
-    sale.TotalExTax,
-    item.SlabDefinition
-  );
+function toCents(amount) {
+  return Math.round(Number(amount) * 100);
 }
 
+function fromCents(cents) {
+  return Number((cents / 100).toFixed(2));
+}
 
-          const { stylistPercent, operatorPercent } = resolveSplit(item, sale);
+// --------------------------------------------------
+// FIRST PASS — METHOD 1 + SLAB BUCKET COLLECTION
+// --------------------------------------------------
 
-          // Operator caching
+for (const sale of sales) {
+
+  const originalEmployeeId = sale.EmployeeId;
+  const originalEmployeeName = `${sale.FirstName} ${sale.LastName}`;
+
+  const saleCents = toCents(sale.TotalExTax);
+    let included = false;  // ✅ add this at the top of the sale loop
+
+  for (const rule of rules) {
+    for (const item of rule.Items) {
+
+      if (item.ItemType !== sale.ItemType) continue;
+
+      if (!item.ApplyAllCategories) {
+    if (!item.CategoryFilter.includes(sale.CategoryId)) {
+      continue;
+    }
+  }
+
+      if (
+        rule.EmployeeIds.length &&
+        !rule.EmployeeIds.includes(sale.EmployeeId)
+      ) continue;
+
+      if (
+        sale.ItemType === 1 &&
+        !item.ApplyAllCategories &&
+        item.CategoryFilter.length &&
+       !item.CategoryFilter.includes(Number(sale.CategoryId))
+      ) continue;
+
+      if (
+        sale.ItemType === 2 &&
+        !item.ApplyAllCompanies &&
+        item.CategoryFilter.length &&
+        !item.CategoryFilter.includes(sale.CompanyId)
+      ) continue;
+       // ✅ mark as included if any rule/item matches
+      included = true;
+
+      // ==================================================
+      // METHOD 1 — FLAT %
+      // ==================================================
+      if (item.CommissionMethod === 1) {
+
+        const percentBp = Math.round(item.Percent * 100);
+        const baseCommissionCents =
+          Math.round((saleCents * percentBp) / 10000);
+
+        const { stylistPercent, operatorPercent } =
+          resolveSplit(item, sale);
+
+        const stylistBp = Math.round(stylistPercent * 100);
+        const operatorBp = Math.round(operatorPercent * 100);
+
+        const stylistCents =
+          Math.round((baseCommissionCents * stylistBp) / 10000);
+
+        const operatorCents =
+          Math.round((baseCommissionCents * operatorBp) / 10000);
+
+        // ---------------- STYLIST ----------------
+        if (stylistCents > 0) {
+          transactions.push({
+            SaleID: sale.SaleID,
+            OriginalEmployeeId: originalEmployeeId,
+            OriginalEmployeeName: originalEmployeeName,
+            EmployeeId: sale.EmployeeId,
+            EmployeeName: originalEmployeeName,
+            Role: 'Stylist',
+            IsSplitChild: false,
+            ItemType: sale.ItemType,
+            ItemName: sale.ItemName,
+            TotalSalesExTax: fromCents(saleCents),
+            CommissionAmount: fromCents(stylistCents),
+            CommissionMethod: 1,
+            CommissionPercent: item.Percent,
+            CommissionSlabs: null,
+            CommissionRuleId: rule.CommissionRuleId,
+            RuleName: rule.Name,
+            TransactionDate: sale.TransactionDate,
+            SplitInfo: `Stylist ${stylistPercent}%`
+          });
+        }
+
+        // ---------------- OPERATOR ----------------
+        if (operatorCents > 0) {
+
           let operatorId = operatorCache.get(sale.SaleID);
+
           if (operatorId === undefined) {
             operatorId = await getOperatorId(sale.SaleID);
             operatorCache.set(sale.SaleID, operatorId);
           }
 
-          let operatorName = operatorNameCache.get(operatorId);
-          if (operatorId && operatorName === undefined) {
-            const op = await pool.request()
-              .input('id', sql.Int, operatorId)
-              .query(`SELECT FirstName, LastName FROM dbo.employs WHERE IdNumber = @id`);
-            operatorName = op.recordset.length ? `${op.recordset[0].FirstName} ${op.recordset[0].LastName}` : null;
-            operatorNameCache.set(operatorId, operatorName);
-          }
+          if (operatorId) {
 
-          const stylistCommission = commission * (stylistPercent / 100);
-          const operatorCommission = commission * (operatorPercent / 100);
+            let operatorName = operatorNameCache.get(operatorId);
 
-          // Stylist transaction
-          if (stylistCommission > 0) {
-            transactions.push({
-              SaleID: sale.SaleID,
-              OriginalEmployeeId: originalEmployeeId,
-              OriginalEmployeeName: originalEmployeeName,
-              EmployeeId: sale.EmployeeId,
-              EmployeeName: originalEmployeeName,
-              Role: 'Stylist',
-              IsSplitChild: false,
-              ItemType: sale.ItemType,
-              ItemName: sale.ItemName,
-              TotalSalesExTax: Number(sale.TotalExTax),
-              CommissionAmount: Number(stylistCommission),
-                // 🔹 ADD THESE
-              CommissionMethod: item.CommissionMethod,   // 1 = %, 2 = slab
-              CommissionPercent: item.Percent,
-              CommissionSlabs: item.SlabDefinition,
-              CommissionRuleId: rule.CommissionRuleId,
-              RuleName: rule.Name,
-              TransactionDate: sale.TransactionDate,
-              SplitInfo: `Stylist ${stylistPercent}%`
-            });
-          }
+            if (operatorName === undefined) {
+              const op = await pool.request()
+                .input('id', sql.Int, operatorId)
+                .query(`
+                  SELECT FirstName, LastName
+                  FROM dbo.employs
+                  WHERE IdNumber = @id
+                `);
 
-          // Operator transaction
-          if (operatorCommission > 0 && operatorName) {
-            transactions.push({
-              SaleID: sale.SaleID,
-              OriginalEmployeeId: originalEmployeeId,
-              OriginalEmployeeName: originalEmployeeName,
-              EmployeeId: operatorId,
-              EmployeeName: operatorName,
-              Role: 'Operator',
-              IsSplitChild: true,
-              ItemType: sale.ItemType,
-              ItemName: sale.ItemName,
-              TotalSalesExTax: 0,
-              CommissionAmount: Number(operatorCommission),
-                // 🔹 ADD THESE
-              CommissionMethod: item.CommissionMethod,   // 1 = %, 2 = slab
-              CommissionPercent: item.Percent,
-              CommissionSlabs: item.SlabDefinition,
-              CommissionRuleId: rule.CommissionRuleId,
-              RuleName: rule.Name,
-              TransactionDate: sale.TransactionDate,
-              SplitInfo: `Operator ${operatorPercent}%`
-            });
+              operatorName = op.recordset.length
+                ? `${op.recordset[0].FirstName} ${op.recordset[0].LastName}`
+                : null;
+
+              operatorNameCache.set(operatorId, operatorName);
+            }
+
+            if (operatorName) {
+              transactions.push({
+                SaleID: sale.SaleID,
+                OriginalEmployeeId: originalEmployeeId,
+                OriginalEmployeeName: originalEmployeeName,
+                EmployeeId: operatorId,
+                EmployeeName: operatorName,
+                Role: 'Operator',
+                IsSplitChild: true,
+                ItemType: sale.ItemType,
+                ItemName: sale.ItemName,
+                TotalSalesExTax: 0,
+                CommissionAmount: fromCents(operatorCents),
+                CommissionMethod: 1,
+                CommissionPercent: item.Percent,
+                CommissionSlabs: null,
+                CommissionRuleId: rule.CommissionRuleId,
+                RuleName: rule.Name,
+                TransactionDate: sale.TransactionDate,
+                SplitInfo: `Operator ${operatorPercent}%`
+              });
+            }
           }
         }
       }
+
+      // ==================================================
+      // METHOD 2 & 3 — SLAB AGGREGATION
+      // ==================================================
+      else if ([2, 3].includes(item.CommissionMethod)) {
+
+        const bucketKey =
+          `${sale.EmployeeId}_${rule.CommissionRuleId}_${item.CommissionRuleItemId}`;
+
+        if (!slabBuckets[bucketKey]) {
+          slabBuckets[bucketKey] = {
+            Rule: rule,
+            Item: item,
+            Sales: [],
+            TotalCents: 0
+          };
+        }
+
+        slabBuckets[bucketKey].Sales.push({
+          ...sale,
+          SaleCents: saleCents
+        });
+
+        slabBuckets[bucketKey].TotalCents += saleCents;
+      }
+    }
+    
+  }
+  // if (!included) {
+  //   console.log('SALE SKIPPED:', sale);
+  // }
+}
+ 
+
+// =========================================================
+// SECOND PASS — PROCESS SLABS
+// =========================================================
+
+for (const bucketKey in slabBuckets) {
+
+  const bucket = slabBuckets[bucketKey];
+  const { Item, Rule, Sales, TotalCents } = bucket;
+
+  if (TotalCents <= 0) continue;
+
+  const totalMoney = fromCents(TotalCents);
+
+  let slabCommissionMoney = 0;
+
+  if (Item.CommissionMethod === 2)
+    slabCommissionMoney =
+      calculateSlabCommission(totalMoney, Item.SlabDefinition);
+
+  if (Item.CommissionMethod === 3)
+    slabCommissionMoney =
+      calculateFlatSlabCommission(totalMoney, Item.SlabDefinition);
+
+  const slabCommissionCents = toCents(slabCommissionMoney);
+  if (slabCommissionCents <= 0) continue;
+
+  let distributedCents = 0;
+
+  for (let i = 0; i < Sales.length; i++) {
+
+    const sale = Sales[i];
+    const isLast = i === Sales.length - 1;
+
+    const originalEmployeeId = sale.EmployeeId;
+    const originalEmployeeName = `${sale.FirstName} ${sale.LastName}`;
+
+    let lineCommissionCents;
+
+    if (!isLast) {
+      lineCommissionCents =
+        Math.round((sale.SaleCents * slabCommissionCents) / TotalCents);
+      distributedCents += lineCommissionCents;
+    } else {
+      lineCommissionCents =
+        slabCommissionCents - distributedCents;
     }
 
+    const { stylistPercent, operatorPercent } =
+      resolveSplit(Item, sale);
+
+    const stylistBp = Math.round(stylistPercent * 100);
+
+    const stylistCents =
+      Math.round((lineCommissionCents * stylistBp) / 10000);
+
+    const operatorCents =
+      lineCommissionCents - stylistCents;
+
+    // ---------------- STYLIST ----------------
+    if (stylistCents > 0) {
+      transactions.push({
+        SaleID: sale.SaleID,
+        OriginalEmployeeId: originalEmployeeId,
+        OriginalEmployeeName: originalEmployeeName,
+        EmployeeId: sale.EmployeeId,
+        EmployeeName: originalEmployeeName,
+        Role: 'Stylist',
+        IsSplitChild: false,
+        ItemType: sale.ItemType,
+        ItemName: sale.ItemName,
+        TotalSalesExTax: fromCents(sale.SaleCents),
+        CommissionAmount: fromCents(stylistCents),
+        CommissionMethod: Item.CommissionMethod,
+        CommissionPercent: Item.Percent,
+        CommissionSlabs: Item.SlabDefinition,
+        CommissionRuleId: Rule.CommissionRuleId,
+        RuleName: Rule.Name,
+        TransactionDate: sale.TransactionDate,
+        SplitInfo: `Stylist ${stylistPercent}%`
+      });
+    }
+
+    // ---------------- OPERATOR ----------------
+    if (operatorCents > 0) {
+
+      let operatorId = operatorCache.get(sale.SaleID);
+
+      if (operatorId === undefined) {
+        operatorId = await getOperatorId(sale.SaleID);
+        operatorCache.set(sale.SaleID, operatorId);
+      }
+
+      if (operatorId) {
+
+        let operatorName = operatorNameCache.get(operatorId);
+
+        if (operatorName === undefined) {
+          const op = await pool.request()
+            .input('id', sql.Int, operatorId)
+            .query(`
+              SELECT FirstName, LastName
+              FROM dbo.employs
+              WHERE IdNumber = @id
+            `);
+
+          operatorName = op.recordset.length
+            ? `${op.recordset[0].FirstName} ${op.recordset[0].LastName}`
+            : null;
+
+          operatorNameCache.set(operatorId, operatorName);
+        }
+
+        if (operatorName) {
+          transactions.push({
+            SaleID: sale.SaleID,
+            OriginalEmployeeId: originalEmployeeId,
+            OriginalEmployeeName: originalEmployeeName,
+            EmployeeId: operatorId,
+            EmployeeName: operatorName,
+            Role: 'Operator',
+            IsSplitChild: true,
+            ItemType: sale.ItemType,
+            ItemName: sale.ItemName,
+            TotalSalesExTax: 0,
+            CommissionAmount: fromCents(operatorCents),
+            CommissionMethod: Item.CommissionMethod,
+            CommissionPercent: Item.Percent,
+            CommissionSlabs: Item.SlabDefinition,
+            CommissionRuleId: Rule.CommissionRuleId,
+            RuleName: Rule.Name,
+            TransactionDate: sale.TransactionDate,
+            SplitInfo: `Operator ${operatorPercent}%`
+          });
+        }
+      }
+    }
+  }
+  
+}
     /*
     ============================================
     SUMMARY
@@ -507,6 +702,9 @@ router.post('/', async (req, res) => {
       summaryMap[t.EmployeeId].TotalSalesExTax += t.TotalSalesExTax;
       summaryMap[t.EmployeeId].TotalCommission += t.CommissionAmount;
     }
+    // DEBUG: check stylist total sales
+
+
 
     res.json({
       summary: Object.values(summaryMap),

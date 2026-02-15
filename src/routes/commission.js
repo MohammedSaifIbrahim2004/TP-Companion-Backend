@@ -28,26 +28,21 @@ function validateServiceVsMembership(items, membershipCategories) {
   for (const item of items) {
     if (item.ItemType !== 1) continue; // only Service
 
-    // ❌ ApplyAllCategories not allowed if membership exists
-    if (item.ApplyAllCategories && membershipCategories.length) {
-      throw {
-        status: 400,
-        message:
-          'Service cannot apply to all categories when membership categories are already selected'
-      };
-    }
+    // ✅ Allow ApplyAllCategories
+    // It will be handled later automatically
 
-    // ❌ Explicit overlap not allowed
-    const overlap = (item.CategoryFilter || []).filter(cat =>
-      membershipCategories.includes(cat)
-    );
+    if (!item.ApplyAllCategories) {
+      const overlap = (item.CategoryFilter || []).filter(cat =>
+        membershipCategories.includes(cat)
+      );
 
-    if (overlap.length) {
-      throw {
-        status: 400,
-        message:
-          'Service cannot include categories already used by membership'
-      };
+      if (overlap.length) {
+        throw {
+          status: 400,
+          message:
+            'Service cannot include categories already used by membership or promotion'
+        };
+      }
     }
   }
 }
@@ -161,6 +156,7 @@ GET categories
 
 router.get('/categories', async (req, res) => {
   try {
+
     const pool = await poolPromise;
 
     const itemType = parseInt(req.query.itemType, 10);
@@ -172,140 +168,215 @@ router.get('/categories', async (req, res) => {
     }
 
     const exclude = req.query.exclude
-      ? req.query.exclude
-          .split(',')
-          .map(c => parseInt(c, 10))
-          .filter(c => !isNaN(c))
+      ? req.query.exclude.split(',').map(Number).filter(Boolean)
       : [];
 
-    // 🔹 Step 1A: Categories used by OTHER membership + promotion rules
-// Determine which itemTypes to exclude based on current itemType
-let excludeItemTypes = [];
+    // -------------------------
+    // STEP 1: Ownership queries
+    // -------------------------
 
-if (itemType === 1) {
-  excludeItemTypes = [7, 8];
-}
-else if (itemType === 7) {
-  excludeItemTypes = [1, 8];
-}
-else if (itemType === 8) {
-  excludeItemTypes = [1, 7];
-}
+    let excludeItemTypes = [];
 
-let otherMpResult = { recordset: [] };
+    if (itemType === 1) excludeItemTypes = [7, 8];
+    else if (itemType === 7) excludeItemTypes = [1, 8];
+    else if (itemType === 8) excludeItemTypes = [1, 7];
 
-if (excludeItemTypes.length) {
-  otherMpResult = await pool.request()
-    .input('ruleId', sql.Int, ruleId)
-    .query(`
-      SELECT DISTINCT c.[Id Number] AS Id, c.Name
-      FROM dbo.category c
-      JOIN dbo.TPCommissionRuleItemCategories rc
-        ON rc.CategoryId = c.[Id Number]
-      JOIN dbo.TPCommissionRuleItems i
-        ON rc.CommissionRuleItemId = i.CommissionRuleItemId
-      WHERE i.ItemType IN (${excludeItemTypes.join(',')})
-        AND (@ruleId IS NULL OR i.CommissionRuleId <> @ruleId)
-    `);
-}
-// 🔹 Step 1B: Categories used by THIS rule (edit mode)
-let currentRuleResult = { recordset: [] };
+    let otherMpResult = { recordset: [] };
+    let otherServiceResult = { recordset: [] };
+    let serviceApplyAllExists = false;
 
-if (ruleId) {
-  currentRuleResult = await pool.request()
-    .input('ruleId', sql.Int, ruleId)
-    .input('itemType', sql.Int, itemType)
-    .query(`
-      SELECT DISTINCT c.[Id Number] AS Id, c.Name
-      FROM dbo.category c
-      JOIN dbo.TPCommissionRuleItemCategories rc
-        ON rc.CategoryId = c.[Id Number]
-      JOIN dbo.TPCommissionRuleItems i
-        ON rc.CommissionRuleItemId = i.CommissionRuleItemId
-      WHERE i.CommissionRuleId = @ruleId
-        AND i.ItemType = @itemType
-    `);
-}
+    if (excludeItemTypes.length) {
 
-// 🔹 Merge both
-const mpMap = new Map();
+      otherMpResult = await pool.request()
+        .input('ruleId', sql.Int, ruleId)
+        .query(`
+          SELECT DISTINCT rc.CategoryId AS Id
+          FROM dbo.TPCommissionRuleItemCategories rc
+          INNER JOIN dbo.TPCommissionRuleItems i
+            ON i.CommissionRuleItemId = rc.CommissionRuleItemId
+          WHERE
+            i.ItemType IN (${excludeItemTypes.join(',')})
+            AND (@ruleId IS NULL OR i.CommissionRuleId <> @ruleId)
+        `);
+    }
 
-[...otherMpResult.recordset, ...currentRuleResult.recordset]
-  .forEach(c => {
-    mpMap.set(c.Id, c);
-  });
-  const currentRuleCategories = currentRuleResult.recordset;
-const currentRuleCategoryIds = currentRuleCategories.map(c => c.Id);
-
-const mpCategories = Array.from(mpMap.values());
-
-    // 🔹 Step 2: If Membership or Promotion → ONLY return previously used categories
+    // Services explicit ownership
     if (itemType === 7 || itemType === 8) {
 
-  const allCategoriesResult = await pool.request().query(`
-    SELECT [Id Number] AS Id, Name
-    FROM dbo.category
-    ORDER BY Name
-  `);
+      otherServiceResult = await pool.request()
+        .input('ruleId', sql.Int, ruleId)
+        .query(`
+          SELECT DISTINCT rc.CategoryId AS Id
+          FROM dbo.TPCommissionRuleItemCategories rc
+          INNER JOIN dbo.TPCommissionRuleItems i
+            ON i.CommissionRuleItemId = rc.CommissionRuleItemId
+          WHERE
+            i.ItemType = 1
+            AND (@ruleId IS NULL OR i.CommissionRuleId <> @ruleId)
+        `);
 
-  const blockedCategoryIds = mpCategories.map(c => c.Id);
+      // Detect ApplyAll Services
+      const applyAllCheck = await pool.request()
+        .input('ruleId', sql.Int, ruleId)
+        .query(`
+          SELECT TOP 1 1
+          FROM dbo.TPCommissionRuleItems
+          WHERE ItemType = 1
+          AND ApplyAllCategories = 1
+          AND (@ruleId IS NULL OR CommissionRuleId <> @ruleId)
+        `);
 
-  let availableCategories = allCategoriesResult.recordset.filter(c =>
-    !blockedCategoryIds.includes(c.Id) ||
-    currentRuleCategoryIds.includes(c.Id) // allow edit mode categories
-  );
+      serviceApplyAllExists = applyAllCheck.recordset.length > 0;
+    }
 
-  if (exclude.length) {
-    availableCategories = availableCategories.filter(c =>
-    !exclude.includes(c.Id)
- );
-  }
+    let otherSameGroupResult = { recordset: [] };
 
-  return res.json(
-    availableCategories.map(r => ({
-      value: r.Id,
-      label: r.Name
-    }))
-  );
+if (itemType === 7 || itemType === 8) {
+
+  const oppositeType = itemType === 7 ? 8 : 7;
+
+  otherSameGroupResult = await pool.request()
+    .input('ruleId', sql.Int, ruleId)
+    .query(`
+      SELECT DISTINCT rc.CategoryId AS Id
+      FROM dbo.TPCommissionRuleItemCategories rc
+      INNER JOIN dbo.TPCommissionRuleItems i
+        ON i.CommissionRuleItemId = rc.CommissionRuleItemId
+      WHERE
+        i.ItemType = ${oppositeType}
+        AND (@ruleId IS NULL OR i.CommissionRuleId <> @ruleId)
+    `);
+
 }
 
-   // 🔹 Step 3: For Services → return all categories EXCEPT MP categories
-// BUT keep categories already used in this rule (edit mode safe)
+    // -------------------------
+    // STEP 2: Current Rule Categories
+    // -------------------------
 
-const allCategoriesResult = await pool.request().query(`
-  SELECT [Id Number] AS Id, Name
-  FROM dbo.category
-  ORDER BY Name
+    let currentRuleResult = { recordset: [] };
+
+    if (ruleId) {
+
+      currentRuleResult = await pool.request()
+        .input('ruleId', sql.Int, ruleId)
+        .input('itemType', sql.Int, itemType)
+        .query(`
+          SELECT DISTINCT rc.CategoryId AS Id
+          FROM dbo.TPCommissionRuleItemCategories rc
+          INNER JOIN dbo.TPCommissionRuleItems i
+            ON i.CommissionRuleItemId = rc.CommissionRuleItemId
+          WHERE
+            i.CommissionRuleId = @ruleId
+            AND i.ItemType = @itemType
+        `);
+    }
+    const allMpOwnership = await pool.request()
+.query(`
+  SELECT DISTINCT rc.CategoryId AS Id
+  FROM dbo.TPCommissionRuleItemCategories rc
+  INNER JOIN dbo.TPCommissionRuleItems i
+    ON i.CommissionRuleItemId = rc.CommissionRuleItemId
+  WHERE i.ItemType IN (7,8)
 `);
 
-const mpCategoryIds = mpCategories.map(c => c.Id);
+    // -------------------------
+    // STEP 3: Build ownership map
+    // -------------------------
 
-const currentRuleCategoryIdsAll = currentRuleResult.recordset.map(c => c.Id);
+    const ownershipSet = new Set();
 
-// For services
-let availableCategories = allCategoriesResult.recordset.filter(c =>
-    !mpCategoryIds.includes(c.Id) ||
-    currentRuleCategoryIdsAll.includes(c.Id) // allow all current rule categories
-);
+// Service blocks MP
+if (itemType === 1) {
 
-if (exclude.length) {
- availableCategories = availableCategories.filter(c =>
-    !exclude.includes(c.Id)
+  otherMpResult.recordset.forEach(c =>
+    ownershipSet.add(c.Id)
   );
+
 }
 
-res.json(
-  availableCategories.map(r => ({
-    value: r.Id,
-    label: r.Name
-  }))
-);
-  } catch (err) {
-    console.error('GET /categories error:', err);
+// Membership blocks Service + Promotion
+if (itemType === 7) {
+
+  otherServiceResult.recordset.forEach(c =>
+    ownershipSet.add(c.Id)
+  );
+
+  otherSameGroupResult.recordset.forEach(c =>
+    ownershipSet.add(c.Id)
+  );
+
+}
+
+// Promotion blocks Service + Membership
+if (itemType === 8) {
+
+  otherServiceResult.recordset.forEach(c =>
+    ownershipSet.add(c.Id)
+  );
+
+  otherSameGroupResult.recordset.forEach(c =>
+    ownershipSet.add(c.Id)
+  );
+
+}
+
+    // If Services ApplyAll → own everything unused by MP
+    if (serviceApplyAllExists) {
+
+      const all = await pool.request().query(`
+        SELECT [Id Number] AS Id FROM dbo.category
+      `);
+
+      const mpOwned = new Set(allMpOwnership.recordset.map(c => c.Id));
+
+      all.recordset.forEach(c => {
+
+        if (!mpOwned.has(c.Id))
+          ownershipSet.add(c.Id);
+
+      });
+    }
+
+    const currentRuleCategoryIds =
+      new Set(currentRuleResult.recordset.map(c => c.Id));
+
+    // -------------------------
+    // STEP 4: Load all categories
+    // -------------------------
+
+    const allCategoriesResult = await pool.request().query(`
+      SELECT [Id Number] AS Id, Name
+      FROM dbo.category
+      ORDER BY Name
+    `);
+
+    let availableCategories =
+      allCategoriesResult.recordset.filter(c =>
+        !ownershipSet.has(c.Id)
+        || currentRuleCategoryIds.has(c.Id)
+      );
+
+    if (exclude.length)
+      availableCategories =
+        availableCategories.filter(c => !exclude.includes(c.Id));
+
+    // -------------------------
+
+    res.json(
+      availableCategories.map(c => ({
+        value: c.Id,
+        label: c.Name
+      }))
+    );
+
+  }
+  catch (err) {
+
+    console.error(err);
     res.status(500).json({ error: err.message });
+
   }
 });
-
 
 /*
 =====================================================
